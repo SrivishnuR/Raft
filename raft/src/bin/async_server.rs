@@ -1,15 +1,43 @@
 use raft::{async_read, async_send_message};
+use serde_json;
 use std::collections::HashMap;
+use std::env;
+use std::str;
 use std::sync::Arc;
 use std::{error::Error, net::Ipv4Addr};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+    dbg!(&args);
+
+    let mut data_file_path = None;
+    if args.len() >= 2 {
+        data_file_path = Some(args[1].to_owned());
+    }
+
+    server(data_file_path).await;
+    Ok(())
+}
+
+async fn server(data_file_path: Option<String>) {
+    let mut inner_data: HashMap<String, String> = HashMap::new();
+    if let Some(data_file_path) = data_file_path {
+        let contents = fs::read(data_file_path)
+            .await
+            .expect("Invalid data file path");
+        inner_data =
+            serde_json::from_str(str::from_utf8(&contents).unwrap()).expect("Error deserializing");
+    }
+
+    let data = Arc::new(tokio::sync::Mutex::new(inner_data));
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 5555))
         .await
         .unwrap();
-    let data = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // accept connections and process them serially
     loop {
@@ -34,7 +62,7 @@ async fn parse_message(
 ) -> String {
     let sectioned_message: Vec<&str> = message.trim().split(' ').collect();
 
-    if sectioned_message.len() <= 1 {
+    if sectioned_message.len() < 1 {
         return String::from("Invalid command");
     }
 
@@ -74,6 +102,21 @@ async fn parse_message(
             }
 
             return String::from("Key not found");
+        }
+        "snapshot" => {
+            let data = data.lock().await;
+            let serialized_data = serde_json::to_string(&*data).unwrap();
+
+            let uuid = Uuid::new_v4();
+            let file_name = format!("kv-{}.data", &(uuid.to_string()[0..4]));
+            let file_path = format!("snapshots/{}", file_name);
+            let mut data_file = fs::File::create(&file_path).await.unwrap();
+            data_file
+                .write_all(serialized_data.as_bytes())
+                .await
+                .unwrap();
+
+            return file_path;
         }
         _ => "Invalid command",
     };
