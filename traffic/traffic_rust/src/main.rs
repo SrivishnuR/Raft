@@ -1,9 +1,11 @@
+use rand;
 use std::str;
 use std::{error::Error, net::Ipv4Addr};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+#[derive(Clone)]
 enum Commands {
     PressNs,
     PressEw,
@@ -32,17 +34,39 @@ struct TrafficController {
 }
 
 impl TrafficController {
-    pub fn new(initial_state: States) -> TrafficController {
+    pub fn new(
+        initial_state: States,
+        ticks: Option<u8>,
+        button_pressed: Option<bool>,
+    ) -> TrafficController {
         let controller = TrafficController {
             state: initial_state,
-            ticks: 0,
-            button_pressed: false,
+            ticks: ticks.unwrap_or(0),
+            button_pressed: button_pressed.unwrap_or(false),
         };
 
+        controller.assert_invariants();
         controller
     }
 
-    pub fn process_clock_tick(self: &mut Self) -> Option<Vec<(Lights, char)>> {
+    fn assert_invariants(self: &Self) {
+        match self.state {
+            States::NsGreen => {
+                assert!(self.ticks <= 60);
+            }
+            States::NsYellow => {
+                assert_eq!(self.button_pressed, false);
+            }
+            States::EwGreen => {
+                assert!(self.ticks <= 30);
+            }
+            States::EwYellow => {
+                assert_eq!(self.button_pressed, false);
+            }
+        }
+    }
+
+    fn process_clock_tick(self: &mut Self) -> Option<Vec<(Lights, char)>> {
         self.ticks += 1;
 
         match self.state {
@@ -87,15 +111,31 @@ impl TrafficController {
         }
     }
 
-    pub fn process_ew_press(self: &mut Self) {
+    fn process_ew_press(self: &mut Self) {
         if self.state == States::EwGreen {
             self.button_pressed = true;
         }
     }
 
-    pub fn process_ns_press(self: &mut Self) {
+    fn process_ns_press(self: &mut Self) {
         if self.state == States::NsGreen {
             self.button_pressed = true;
+        }
+    }
+
+    pub fn process_command(self: &mut Self, command: Commands) -> Option<Vec<(Lights, char)>> {
+        self.assert_invariants();
+
+        match command {
+            Commands::ClockTick => self.process_clock_tick(),
+            Commands::PressEw => {
+                self.process_ew_press();
+                None
+            }
+            Commands::PressNs => {
+                self.process_ns_press();
+                None
+            }
         }
     }
 }
@@ -112,23 +152,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     send_to(&socket, Lights::Ew, 'R').await;
 
     // Init controller
-    let mut controller = TrafficController::new(States::NsGreen);
+    let mut controller = TrafficController::new(States::NsGreen, None, None);
 
     loop {
-        let command = rx.recv().await;
-
-        if let Some(command) = command {
-            match command {
-                Commands::ClockTick => {
-                    let changes = controller.process_clock_tick();
-                    if let Some(changes) = changes {
-                        for change in changes {
-                            send_to(&socket, change.0, change.1).await;
-                        }
-                    }
-                }
-                Commands::PressEw => controller.process_ew_press(),
-                Commands::PressNs => controller.process_ns_press(),
+        let command = rx.recv().await.unwrap();
+        let optional_changes = controller.process_command(command);
+        if let Some(changes) = optional_changes {
+            for change in changes {
+                send_to(&socket, change.0, change.1).await;
             }
         }
     }
@@ -186,25 +217,25 @@ mod tests {
 
     #[test]
     fn test_transition_1() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
         for _ in 0..59 {
-            controller.process_clock_tick();
+            assert_eq!(None, controller.process_command(Commands::ClockTick));
         }
 
-        let state_change = controller.process_clock_tick();
+        let state_change = controller.process_command(Commands::ClockTick);
         assert_eq!(state_change, Some(vec![(Lights::Ns, 'Y')]));
     }
 
     #[test]
     fn test_transition_2() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
         for _ in 0..64 {
-            controller.process_clock_tick();
+            controller.process_command(Commands::ClockTick);
         }
 
-        let state_change = controller.process_clock_tick();
+        let state_change = controller.process_command(Commands::ClockTick);
         assert_eq!(
             state_change,
             Some(vec![(Lights::Ns, 'R'), (Lights::Ew, 'G')])
@@ -213,25 +244,25 @@ mod tests {
 
     #[test]
     fn test_transition_3() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
         for _ in 0..94 {
-            controller.process_clock_tick();
+            controller.process_command(Commands::ClockTick);
         }
 
-        let state_change = controller.process_clock_tick();
+        let state_change = controller.process_command(Commands::ClockTick);
         assert_eq!(state_change, Some(vec![(Lights::Ew, 'Y')]));
     }
 
     #[test]
     fn test_transition_4() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
         for _ in 0..99 {
-            controller.process_clock_tick();
+            controller.process_command(Commands::ClockTick);
         }
 
-        let state_change = controller.process_clock_tick();
+        let state_change = controller.process_command(Commands::ClockTick);
         assert_eq!(
             state_change,
             Some(vec![(Lights::Ew, 'R'), (Lights::Ns, 'G')])
@@ -240,32 +271,45 @@ mod tests {
 
     #[test]
     fn test_button_before_15() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
-        controller.process_ns_press();
+        controller.process_command(Commands::PressNs);
         for _ in 0..14 {
-            assert_eq!(None, controller.process_clock_tick());
+            assert_eq!(None, controller.process_command(Commands::ClockTick));
         }
 
         assert_eq!(
             Some(vec![(Lights::Ns, 'Y')]),
-            controller.process_clock_tick()
+            controller.process_command(Commands::ClockTick)
         );
     }
 
     #[test]
     fn test_button_after_15() {
-        let mut controller = TrafficController::new(States::NsGreen);
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
 
         for _ in 0..15 {
-            assert_eq!(None, controller.process_clock_tick());
+            assert_eq!(None, controller.process_command(Commands::ClockTick));
         }
 
         controller.process_ns_press();
 
         assert_eq!(
             Some(vec![(Lights::Ns, 'Y')]),
-            controller.process_clock_tick()
+            controller.process_command(Commands::ClockTick)
         );
+    }
+
+    #[test]
+    // This tests that invariants don't break - passes by not panic'ing
+    fn fuzzing_test() {
+        let mut controller = TrafficController::new(States::NsGreen, None, None);
+        let commands = [Commands::ClockTick, Commands::PressEw, Commands::PressNs];
+
+        for _ in 0..10000 {
+            let mut index = rand::random::<usize>();
+            index = index % 3;
+            controller.process_command(commands[index].clone());
+        }
     }
 }
