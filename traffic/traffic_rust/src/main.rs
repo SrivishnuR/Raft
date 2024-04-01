@@ -19,6 +19,7 @@ enum States {
     EwYellow,
 }
 
+#[derive(PartialEq, Debug)]
 enum Lights {
     Ns,
     Ew,
@@ -28,46 +29,20 @@ struct TrafficController {
     state: States,
     ticks: u8,
     button_pressed: bool,
-    socket: UdpSocket,
 }
 
 impl TrafficController {
-    pub async fn new() -> TrafficController {
-        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 10001)).await.unwrap();
-
+    pub fn new(initial_state: States) -> TrafficController {
         let controller = TrafficController {
-            state: States::NsGreen,
+            state: initial_state,
             ticks: 0,
             button_pressed: false,
-            socket,
         };
 
-        controller.send_to(Lights::Ns, 'G').await;
-        controller.send_to(Lights::Ew, 'R').await;
         controller
     }
 
-    async fn send_to(self: &Self, light: Lights, color: char) {
-        let mut color_buffer = [0; 1];
-        color.encode_utf8(&mut color_buffer);
-
-        match light {
-            Lights::Ew => {
-                self.socket
-                    .send_to(&color_buffer, (Ipv4Addr::LOCALHOST, 11000))
-                    .await
-                    .unwrap();
-            }
-            Lights::Ns => {
-                self.socket
-                    .send_to(&color_buffer, (Ipv4Addr::LOCALHOST, 12000))
-                    .await
-                    .unwrap();
-            }
-        }
-    }
-
-    pub async fn process_clock_tick(self: &mut Self) {
+    pub fn process_clock_tick(self: &mut Self) -> Option<Vec<(Lights, char)>> {
         self.ticks += 1;
 
         match self.state {
@@ -76,32 +51,38 @@ impl TrafficController {
                     self.state = States::NsYellow;
                     self.ticks = 0;
                     self.button_pressed = false;
-                    self.send_to(Lights::Ns, 'Y').await;
+                    return Some(vec![(Lights::Ns, 'Y')]);
                 }
+
+                None
             }
             States::NsYellow => {
                 if self.ticks >= 5 {
                     self.state = States::EwGreen;
                     self.ticks = 0;
-                    self.send_to(Lights::Ns, 'R').await;
-                    self.send_to(Lights::Ew, 'G').await;
+                    return Some(vec![(Lights::Ns, 'R'), (Lights::Ew, 'G')]);
                 }
+
+                None
             }
             States::EwGreen => {
                 if self.ticks >= 30 || (self.ticks >= 15 && self.button_pressed) {
                     self.state = States::EwYellow;
                     self.ticks = 0;
                     self.button_pressed = false;
-                    self.send_to(Lights::Ew, 'Y').await;
+                    return Some(vec![(Lights::Ew, 'Y')]);
                 }
+
+                None
             }
             States::EwYellow => {
                 if self.ticks >= 5 {
-                    self.state = States::EwGreen;
+                    self.state = States::NsGreen;
                     self.ticks = 0;
-                    self.send_to(Lights::Ew, 'R').await;
-                    self.send_to(Lights::Ns, 'G').await;
+                    return Some(vec![(Lights::Ew, 'R'), (Lights::Ns, 'G')]);
                 }
+
+                None
             }
         }
     }
@@ -125,13 +106,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tokio::spawn(button_listener(tx.clone()));
     tokio::spawn(clock(tx.clone()));
 
-    let mut controller = TrafficController::new().await;
+    // Init traffic lights
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 10001)).await.unwrap();
+    send_to(&socket, Lights::Ns, 'G').await;
+    send_to(&socket, Lights::Ew, 'R').await;
+
+    // Init controller
+    let mut controller = TrafficController::new(States::NsGreen);
+
     loop {
         let command = rx.recv().await;
 
         if let Some(command) = command {
             match command {
-                Commands::ClockTick => controller.process_clock_tick().await,
+                Commands::ClockTick => {
+                    let changes = controller.process_clock_tick();
+                    if let Some(changes) = changes {
+                        for change in changes {
+                            send_to(&socket, change.0, change.1).await;
+                        }
+                    }
+                }
                 Commands::PressEw => controller.process_ew_press(),
                 Commands::PressNs => controller.process_ns_press(),
             }
@@ -141,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn clock(tx: mpsc::Sender<Commands>) {
     loop {
-        sleep(Duration::from_secs(1)).await;
+        sleep(Duration::from_millis(1000)).await;
         tx.send(Commands::ClockTick).await.unwrap();
     }
 }
@@ -162,5 +157,115 @@ async fn button_listener(tx: mpsc::Sender<Commands>) {
             "EW" => tx.send(Commands::PressEw).await.unwrap(),
             _ => println!("{}", command),
         }
+    }
+}
+
+async fn send_to(socket: &UdpSocket, light: Lights, color: char) {
+    let mut color_buffer = [0; 1];
+    color.encode_utf8(&mut color_buffer);
+
+    match light {
+        Lights::Ew => {
+            socket
+                .send_to(&color_buffer, (Ipv4Addr::LOCALHOST, 11000))
+                .await
+                .unwrap();
+        }
+        Lights::Ns => {
+            socket
+                .send_to(&color_buffer, (Ipv4Addr::LOCALHOST, 12000))
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transition_1() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        for _ in 0..59 {
+            controller.process_clock_tick();
+        }
+
+        let state_change = controller.process_clock_tick();
+        assert_eq!(state_change, Some(vec![(Lights::Ns, 'Y')]));
+    }
+
+    #[test]
+    fn test_transition_2() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        for _ in 0..64 {
+            controller.process_clock_tick();
+        }
+
+        let state_change = controller.process_clock_tick();
+        assert_eq!(
+            state_change,
+            Some(vec![(Lights::Ns, 'R'), (Lights::Ew, 'G')])
+        );
+    }
+
+    #[test]
+    fn test_transition_3() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        for _ in 0..94 {
+            controller.process_clock_tick();
+        }
+
+        let state_change = controller.process_clock_tick();
+        assert_eq!(state_change, Some(vec![(Lights::Ew, 'Y')]));
+    }
+
+    #[test]
+    fn test_transition_4() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        for _ in 0..99 {
+            controller.process_clock_tick();
+        }
+
+        let state_change = controller.process_clock_tick();
+        assert_eq!(
+            state_change,
+            Some(vec![(Lights::Ew, 'R'), (Lights::Ns, 'G')])
+        );
+    }
+
+    #[test]
+    fn test_button_before_15() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        controller.process_ns_press();
+        for _ in 0..14 {
+            assert_eq!(None, controller.process_clock_tick());
+        }
+
+        assert_eq!(
+            Some(vec![(Lights::Ns, 'Y')]),
+            controller.process_clock_tick()
+        );
+    }
+
+    #[test]
+    fn test_button_after_15() {
+        let mut controller = TrafficController::new(States::NsGreen);
+
+        for _ in 0..15 {
+            assert_eq!(None, controller.process_clock_tick());
+        }
+
+        controller.process_ns_press();
+
+        assert_eq!(
+            Some(vec![(Lights::Ns, 'Y')]),
+            controller.process_clock_tick()
+        );
     }
 }
