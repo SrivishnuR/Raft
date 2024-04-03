@@ -1,7 +1,6 @@
 pub mod raft {
     use crate::{raft_log::raft_log::RaftLog, raft_net::raft_net::ServerNumber};
     use serde::{Deserialize, Serialize};
-    use tokio::sync::mpsc::{Receiver, Sender};
 
     #[derive(Serialize, Deserialize, Clone)]
     pub enum Message {
@@ -28,12 +27,12 @@ pub mod raft {
     pub struct Raft {
         log: RaftLog,
         state: States,
-        cluster_size: ServerNumber,
+        cluster_size: u8,
         term: usize,
     }
 
     impl Raft {
-        pub fn new(cluster_size: ServerNumber) -> Raft {
+        pub fn new(cluster_size: u8) -> Raft {
             Raft {
                 log: RaftLog::new(),
                 state: States::Follower,
@@ -90,7 +89,7 @@ pub mod raft {
 
             let mut commands = vec![];
             for server_number in 0..self.cluster_size {
-                commands.push((server_number, response.clone()))
+                commands.push((ServerNumber::Server(server_number), response.clone()))
             }
 
             commands

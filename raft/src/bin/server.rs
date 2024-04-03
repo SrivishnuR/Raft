@@ -13,22 +13,22 @@ async fn main() {
         panic!("Server number not specified or too many arguments");
     }
 
-    let server_number: ServerNumber = args[1].parse().expect("Server number is not valid");
+    let server_number: u8 = args[1].parse().expect("Server number is not valid");
 
     let (write_send, write_recv) = mpsc::channel::<(ServerNumber, String)>(100);
     let (read_send, mut read_recv) = mpsc::channel::<(ServerNumber, String)>(100);
 
     let mut raft_net = RaftNet::new(server_number);
-    tokio::spawn(async move { raft_net.init(read_send, write_recv).await });
+    let raft_net_task = tokio::spawn(async move { raft_net.init(read_send, write_recv).await });
 
     let mut raft = Raft::new(SERVER_ADDRESSES.len().try_into().unwrap());
 
-    tokio::spawn(async move {
+    let raft_task = tokio::spawn(async move {
         loop {
             let (server_number, message) = read_recv.recv().await.unwrap();
 
             let deserialized_message =
-                serde_json::from_str::<Message>(&message).expect("Valid Message");
+                serde_json::from_str::<Message>(&message).expect("Invalid Message");
 
             let responses = raft.process_message(server_number, deserialized_message);
 
@@ -44,4 +44,7 @@ async fn main() {
             }
         }
     });
+
+    raft_net_task.await.unwrap();
+    raft_task.await.unwrap();
 }

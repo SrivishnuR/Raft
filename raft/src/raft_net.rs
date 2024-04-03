@@ -70,26 +70,30 @@ pub mod raft_net {
     }
 
     pub struct RaftNet {
-        server_number: ServerNumber,
+        server_number: u8,
     }
 
-    pub type ServerNumber = u8;
+    #[derive(PartialEq, Eq, Hash, Clone, Copy)]
+    pub enum ServerNumber {
+        Client,
+        Server(u8),
+    }
 
     lazy_static! {
         pub static ref SERVER_ADDRESSES: HashMap<ServerNumber, (Ipv4Addr, u16)> = {
             return HashMap::from([
-                (0, (Ipv4Addr::LOCALHOST, 15000)),
-                (1, (Ipv4Addr::LOCALHOST, 16000)),
-                (2, (Ipv4Addr::LOCALHOST, 17000)),
-                (3, (Ipv4Addr::LOCALHOST, 18000)),
-                (4, (Ipv4Addr::LOCALHOST, 19000)),
+                (ServerNumber::Server(0), (Ipv4Addr::LOCALHOST, 15000)),
+                (ServerNumber::Server(1), (Ipv4Addr::LOCALHOST, 16000)),
+                (ServerNumber::Server(2), (Ipv4Addr::LOCALHOST, 17000)),
+                (ServerNumber::Server(3), (Ipv4Addr::LOCALHOST, 18000)),
+                (ServerNumber::Server(4), (Ipv4Addr::LOCALHOST, 19000)),
             ]);
         };
     }
 
     impl RaftNet {
         // Initializes a RaftNet and reaches out to all other servers to establish a connection
-        pub fn new(server_number: ServerNumber) -> RaftNet {
+        pub fn new(server_number: u8) -> RaftNet {
             RaftNet { server_number }
         }
 
@@ -149,7 +153,11 @@ pub mod raft_net {
 
             for (server_number, addr) in SERVER_ADDRESSES.iter() {
                 if let Ok(stream) = TcpStream::connect(addr).await {
-                    let (read, write) = stream.into_split();
+                    let (read, mut write) = stream.into_split();
+                    async_send_message(&mut write, &self.server_number.to_string())
+                        .await
+                        .unwrap();
+
                     read_stream_send.send((*server_number, read)).await.unwrap();
                     write_stream_send
                         .send((*server_number, write))
@@ -160,33 +168,28 @@ pub mod raft_net {
 
             let listener = TcpListener::bind(
                 SERVER_ADDRESSES
-                    .get(&self.server_number)
+                    .get(&ServerNumber::Server(self.server_number))
                     .expect("Server number is not valid"),
             )
             .await
             .unwrap();
 
             loop {
-                let (stream, socket) = listener.accept().await.unwrap();
-                let port = socket.port();
-
-                let server_number =
-                    SERVER_ADDRESSES.iter().find_map(
-                        |(key, &val)| {
-                            if val.1 == port {
-                                Some(key)
-                            } else {
-                                None
-                            }
-                        },
-                    );
-
-                let server_number = server_number.expect("Invalid server connected");
+                let (stream, _) = listener.accept().await.unwrap();
                 let (read, write) = stream.into_split();
 
-                read_stream_send.send((*server_number, read)).await.unwrap();
+                let server_number_string = async_read(&read).await.unwrap();
+                let server_number: ServerNumber;
+                if server_number_string == "client" {
+                    server_number = ServerNumber::Client;
+                } else {
+                    server_number =
+                        ServerNumber::Server(server_number_string.parse::<u8>().unwrap());
+                }
+
+                read_stream_send.send((server_number, read)).await.unwrap();
                 write_stream_send
-                    .send((*server_number, write))
+                    .send((server_number, write))
                     .await
                     .unwrap();
             }
