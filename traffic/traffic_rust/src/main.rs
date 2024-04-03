@@ -1,4 +1,3 @@
-use rand;
 use std::str;
 use std::{error::Error, net::Ipv4Addr};
 use tokio::net::UdpSocket;

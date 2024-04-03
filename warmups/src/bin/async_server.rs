@@ -13,7 +13,6 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
-    dbg!(&args);
 
     let mut data_file_path = None;
     if args.len() >= 2 {
