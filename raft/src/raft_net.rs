@@ -69,32 +69,45 @@ pub mod raft_net {
         Ok(async_read_exactly(stream, size).await?)
     }
 
-    pub struct RaftNet {
-        server_number: u8,
-    }
-
-    #[derive(PartialEq, Eq, Hash, Clone, Copy)]
+    #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
     pub enum ServerNumber {
         Client,
+        Console,
         Server(u8),
     }
 
     lazy_static! {
-        pub static ref SERVER_ADDRESSES: HashMap<ServerNumber, (Ipv4Addr, u16)> = {
+        pub static ref SERVER_ADDRESSES: HashMap<u8, (Ipv4Addr, u16)> = {
             return HashMap::from([
-                (ServerNumber::Server(0), (Ipv4Addr::LOCALHOST, 15000)),
-                (ServerNumber::Server(1), (Ipv4Addr::LOCALHOST, 16000)),
-                (ServerNumber::Server(2), (Ipv4Addr::LOCALHOST, 17000)),
-                (ServerNumber::Server(3), (Ipv4Addr::LOCALHOST, 18000)),
-                (ServerNumber::Server(4), (Ipv4Addr::LOCALHOST, 19000)),
+                (0, (Ipv4Addr::LOCALHOST, 15000)),
+                (1, (Ipv4Addr::LOCALHOST, 16000)),
+                (2, (Ipv4Addr::LOCALHOST, 17000)),
+                (3, (Ipv4Addr::LOCALHOST, 18000)),
+                (4, (Ipv4Addr::LOCALHOST, 19000)),
             ]);
         };
     }
 
+    pub struct RaftNet {
+        server_number: u8,
+        listener: TcpListener,
+    }
+
     impl RaftNet {
-        // Initializes a RaftNet and reaches out to all other servers to establish a connection
-        pub fn new(server_number: u8) -> RaftNet {
-            RaftNet { server_number }
+        // Initializes a RaftNet and sets up the TCP listener
+        pub async fn new(server_number: u8) -> RaftNet {
+            let listener = TcpListener::bind(
+                SERVER_ADDRESSES
+                    .get(&server_number)
+                    .expect("Server number is not valid"),
+            )
+            .await
+            .unwrap();
+
+            RaftNet {
+                server_number,
+                listener,
+            }
         }
 
         async fn write(
@@ -114,6 +127,8 @@ pub mod raft_net {
 
                 if let Some(stream) = stream_map.get_mut(&server_number) {
                     async_send_message(stream, &message).await.unwrap();
+                } else {
+                    dbg!("No stream found for {}", server_number);
                 }
             }
         }
@@ -137,8 +152,8 @@ pub mod raft_net {
             }
         }
 
-        // Listens for other servers attempting to connect
-        pub async fn init(
+        // Runs the networking for the server
+        pub async fn run(
             self: &mut Self,
             read_send: Sender<(ServerNumber, String)>,
             write_recv: Receiver<(ServerNumber, String)>,
@@ -152,36 +167,39 @@ pub mod raft_net {
             tokio::spawn(RaftNet::read(read_send, read_stream_recv));
 
             for (server_number, addr) in SERVER_ADDRESSES.iter() {
+                // Don't connect to yourself
+                if *server_number == self.server_number {
+                    continue;
+                }
+
+                let wrapped_server_number = ServerNumber::Server(*server_number);
                 if let Ok(stream) = TcpStream::connect(addr).await {
                     let (read, mut write) = stream.into_split();
                     async_send_message(&mut write, &self.server_number.to_string())
                         .await
                         .unwrap();
 
-                    read_stream_send.send((*server_number, read)).await.unwrap();
+                    read_stream_send
+                        .send((wrapped_server_number, read))
+                        .await
+                        .unwrap();
                     write_stream_send
-                        .send((*server_number, write))
+                        .send((wrapped_server_number, write))
                         .await
                         .unwrap();
                 }
             }
 
-            let listener = TcpListener::bind(
-                SERVER_ADDRESSES
-                    .get(&ServerNumber::Server(self.server_number))
-                    .expect("Server number is not valid"),
-            )
-            .await
-            .unwrap();
-
             loop {
-                let (stream, _) = listener.accept().await.unwrap();
+                let (stream, _) = self.listener.accept().await.unwrap();
                 let (read, write) = stream.into_split();
 
                 let server_number_string = async_read(&read).await.unwrap();
                 let server_number: ServerNumber;
                 if server_number_string == "client" {
                     server_number = ServerNumber::Client;
+                } else if server_number_string == "console" {
+                    server_number = ServerNumber::Console;
                 } else {
                     server_number =
                         ServerNumber::Server(server_number_string.parse::<u8>().unwrap());

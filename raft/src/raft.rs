@@ -2,8 +2,14 @@ pub mod raft {
     use crate::{raft_log::raft_log::RaftLog, raft_net::raft_net::ServerNumber};
     use serde::{Deserialize, Serialize};
 
-    #[derive(Serialize, Deserialize, Clone)]
+    #[derive(Serialize, Deserialize, Clone, Debug)]
     pub enum Message {
+        ConsoleRequest {
+            message: String,
+        },
+        ConsoleResponse {
+            message: String,
+        },
         ClientLogAppendRequest {
             entries: Vec<String>,
         },
@@ -63,6 +69,8 @@ pub mod raft {
                 Message::AppendEntriesResponse { success } => {
                     self.handle_append_entries_reponse(server_number, success)
                 }
+                Message::ConsoleRequest { message } => self.handle_console_request(message),
+                Message::ConsoleResponse { .. } => panic!("Received a console response!"),
             }
         }
 
@@ -92,6 +100,7 @@ pub mod raft {
                 commands.push((ServerNumber::Server(server_number), response.clone()))
             }
 
+            dbg!(&commands);
             commands
         }
 
@@ -114,6 +123,67 @@ pub mod raft {
             success: bool,
         ) -> Vec<(ServerNumber, Message)> {
             vec![]
+        }
+
+        fn handle_console_request(
+            self: &mut Self,
+            message: String,
+        ) -> Vec<(ServerNumber, Message)> {
+            dbg!("IN CONSOLE REQUEST");
+            let response = self.parse_console_request(message);
+            dbg!(&response);
+
+            vec![(
+                ServerNumber::Console,
+                Message::ConsoleResponse { message: response },
+            )]
+        }
+
+        fn parse_console_request(self: &mut Self, message: String) -> String {
+            let sectioned_message: Vec<&str> = message.trim().split(' ').collect();
+
+            if sectioned_message.len() < 1 {
+                return String::from("Invalid command");
+            }
+
+            match sectioned_message[0] {
+                "set" => {
+                    if sectioned_message.len() != 2 {
+                        return String::from("Invalid command");
+                    }
+
+                    match sectioned_message[1] {
+                        "leader" => {
+                            self.state = States::Leader;
+                            return String::from("Set as leader");
+                        }
+                        "candidate" => {
+                            self.state = States::Candidate;
+                            return String::from("Set as candidate");
+                        }
+                        "follower" => {
+                            self.state = States::Follower;
+                            return String::from("Set as follower");
+                        }
+                        _ => return String::from("Invalid Command"),
+                    }
+                }
+                "get" => {
+                    if sectioned_message.len() != 2 {
+                        return String::from("Invalid command");
+                    }
+
+                    match sectioned_message[1] {
+                        "log" => {
+                            return format!("{:?}", self.log.get_log());
+                        }
+                        _ => return String::from("Invalid Command"),
+                    }
+                }
+                _ => {
+                    return String::from("Invalid command");
+                }
+            };
         }
     }
 }
