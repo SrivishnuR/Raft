@@ -100,7 +100,6 @@ pub mod raft {
                 commands.push((ServerNumber::Server(server_number), response.clone()))
             }
 
-            dbg!(&commands);
             commands
         }
 
@@ -129,9 +128,7 @@ pub mod raft {
             self: &mut Self,
             message: String,
         ) -> Vec<(ServerNumber, Message)> {
-            dbg!("IN CONSOLE REQUEST");
             let response = self.parse_console_request(message);
-            dbg!(&response);
 
             vec![(
                 ServerNumber::Console,

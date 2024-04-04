@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let server_number: u8 = args[1].parse().expect("Server number is not valid");
     let server_address = SERVER_ADDRESSES
-        .get(&ServerNumber::Server(server_number))
+        .get(&server_number)
         .expect("Server number is not valid");
 
     let stream = TcpStream::connect(server_address).await.unwrap();
