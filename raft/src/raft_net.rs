@@ -4,9 +4,13 @@ pub mod raft_net {
     use std::error::Error;
     use std::net::Ipv4Addr;
     use std::str;
+    use std::time::Duration;
     use tokio::io;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc::{self, Receiver, Sender};
+    use tokio::time::sleep;
+
+    use crate::raft::raft::Message;
 
     pub async fn async_send_message(
         stream: &mut tokio::net::tcp::OwnedWriteHalf,
@@ -73,11 +77,11 @@ pub mod raft_net {
     pub enum ServerNumber {
         Client,
         Console,
-        Server(u8),
+        Server(usize),
     }
 
     lazy_static! {
-        pub static ref SERVER_ADDRESSES: HashMap<u8, (Ipv4Addr, u16)> = {
+        pub static ref SERVER_ADDRESSES: HashMap<usize, (Ipv4Addr, u16)> = {
             return HashMap::from([
                 (0, (Ipv4Addr::LOCALHOST, 15000)),
                 (1, (Ipv4Addr::LOCALHOST, 16000)),
@@ -89,13 +93,13 @@ pub mod raft_net {
     }
 
     pub struct RaftNet {
-        server_number: u8,
+        server_number: usize,
         listener: TcpListener,
     }
 
     impl RaftNet {
         // Initializes a RaftNet and sets up the TCP listener
-        pub async fn new(server_number: u8) -> RaftNet {
+        pub async fn new(server_number: usize) -> RaftNet {
             let listener = TcpListener::bind(
                 SERVER_ADDRESSES
                     .get(&server_number)
@@ -152,6 +156,22 @@ pub mod raft_net {
             }
         }
 
+        async fn send_clock_ticks(server_number: usize, read_send: Sender<(ServerNumber, String)>) {
+            let serialized_clocktick = serde_json::to_string(&Message::ClockTick).unwrap();
+            loop {
+                sleep(Duration::from_secs(1)).await;
+
+                read_send
+                    .clone()
+                    .send((
+                        ServerNumber::Server(server_number),
+                        serialized_clocktick.clone(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        }
+
         // Runs the networking for the server
         pub async fn run(
             self: &mut Self,
@@ -163,6 +183,10 @@ pub mod raft_net {
             let (read_stream_send, read_stream_recv) =
                 mpsc::channel::<(ServerNumber, tokio::net::tcp::OwnedReadHalf)>(100);
 
+            tokio::spawn(RaftNet::send_clock_ticks(
+                self.server_number,
+                read_send.clone(),
+            ));
             tokio::spawn(RaftNet::write(write_recv, write_stream_recv));
             tokio::spawn(RaftNet::read(read_send, read_stream_recv));
 
@@ -202,7 +226,7 @@ pub mod raft_net {
                     server_number = ServerNumber::Console;
                 } else {
                     server_number =
-                        ServerNumber::Server(server_number_string.parse::<u8>().unwrap());
+                        ServerNumber::Server(server_number_string.parse::<usize>().unwrap());
                 }
 
                 read_stream_send.send((server_number, read)).await.unwrap();

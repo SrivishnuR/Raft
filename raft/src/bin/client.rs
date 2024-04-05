@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         panic!("Server number not specified or too many arguments");
     }
 
-    let server_number: u8 = args[1].parse().expect("Server number is not valid");
+    let server_number: usize = args[1].parse().expect("Server number is not valid");
     let server_address = SERVER_ADDRESSES
         .get(&server_number)
         .expect("Server number is not valid");
@@ -38,18 +38,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         reader.read_until(b'\n', &mut user_input).await.unwrap();
         let user_input_string = std::str::from_utf8(&user_input).unwrap();
 
-        let message = Message::ClientLogAppendRequest {
+        let message = Message::ClientRequest {
             entries: vec![user_input_string.trim().to_owned()],
         };
         let serialized_message =
             serde_json::to_string::<Message>(&message).expect("Serialization error");
 
-        dbg!(&serialized_message);
         async_send_message(&mut write, &serialized_message)
             .await
             .unwrap();
-        let response = async_read(&mut read).await.unwrap();
 
-        stdout.write(response.as_bytes()).await.unwrap();
+        let serialized_response = async_read(&mut read).await.unwrap();
+        let deserialized_response =
+            serde_json::from_str::<Message>(&serialized_response).expect("Deserialization error");
+
+        let message = match deserialized_response {
+            Message::ClientResponse { message } => message,
+            _ => String::from("Invalid client response"),
+        };
+
+        stdout.write(message.as_bytes()).await.unwrap();
+        stdout.write("\n".as_bytes()).await.unwrap();
     }
 }

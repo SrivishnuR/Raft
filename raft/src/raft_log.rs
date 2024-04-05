@@ -2,45 +2,31 @@ pub mod raft_log {
     use std::cmp::min;
 
     pub struct RaftLog {
-        log: Vec<(usize, String)>,
+        log: Vec<(Option<usize>, String)>,
     }
 
     impl RaftLog {
         pub fn new() -> RaftLog {
-            RaftLog { log: Vec::new() }
+            RaftLog {
+                log: vec![(None, String::from(""))],
+            }
         }
 
         pub fn append_entries(
             self: &mut Self,
-            prev_index: Option<usize>,
+            prev_index: usize,
             prev_term: Option<usize>,
-            mut entries: Vec<(usize, String)>,
+            entries: &Vec<(Option<usize>, String)>,
         ) -> bool {
-            let index;
-            if prev_index == None {
-                if prev_term != None {
-                    return false;
-                }
-
-                index = 0;
-            } else {
-                let Some(prev_index) = prev_index else {
-                    return false;
-                };
-                let Some(prev_term) = prev_term else {
-                    return false;
-                };
-
-                if self.log.len() <= prev_index {
-                    return false;
-                }
-
-                if self.log[prev_index].0 != prev_term {
-                    return false;
-                }
-
-                index = prev_index + 1;
+            if prev_index >= self.log.len() {
+                return false;
             }
+
+            if self.log[prev_index].0 != prev_term {
+                return false;
+            }
+
+            let index = prev_index + 1;
 
             if index < self.log.len() {
                 let sub_log = &self.log[index..min(self.log.len(), index + entries.len())];
@@ -52,28 +38,32 @@ pub mod raft_log {
                 self.log.drain(index..);
             }
 
-            self.log.append(&mut entries);
+            self.log.append(&mut entries.clone());
             true
         }
 
-        pub fn get_log(self: &Self) -> &Vec<(usize, String)> {
+        pub fn get_log(self: &Self) -> &Vec<(Option<usize>, String)> {
             return &self.log;
         }
 
-        pub fn get_prev_log_index(self: &Self) -> Option<usize> {
-            if self.log.len() == 0 {
-                return None;
-            }
-
-            return Some(self.log.len() - 1);
+        pub fn get_log_from(self: &Self, index: usize) -> Vec<(Option<usize>, String)> {
+            self.log[index..].to_vec()
         }
 
-        pub fn get_prev_log_term(self: &Self) -> Option<usize> {
-            if self.log.len() == 0 {
-                return None;
-            }
+        pub fn get_term(self: &Self, index: usize) -> Option<usize> {
+            self.log[index].0
+        }
 
-            return Some(self.log[self.log.len() - 1].0);
+        pub fn get_entry(self: &Self, index: usize) -> &str {
+            &self.log[index].1
+        }
+
+        pub fn get_latest_log_index(self: &Self) -> usize {
+            self.log.len() - 1
+        }
+
+        pub fn get_latest_log_term(self: &Self) -> Option<usize> {
+            self.log[self.log.len() - 1].0
         }
     }
 }
@@ -85,77 +75,77 @@ mod tests {
     #[test]
     fn test_add_to_empty() {
         let mut raft_log = raft_log::RaftLog::new();
-        assert!(!raft_log.append_entries(None, Some(0), vec![(1, String::from(""))]));
-        assert!(raft_log.append_entries(None, None, vec![(1, String::from(""))]));
-        assert_eq!(raft_log.get_log(), &vec![(1, String::from(""))]);
+        assert!(!raft_log.append_entries(0, Some(0), &vec![(Some(1), String::from(""))]));
+        assert!(raft_log.append_entries(0, None, &vec![(Some(1), String::from(""))]));
+        assert_eq!(raft_log.get_log()[1..], vec![(Some(1), String::from(""))]);
     }
 
     #[test]
     fn test_add_gap() {
         let mut raft_log = raft_log::RaftLog::new();
-        assert!(!raft_log.append_entries(Some(1), Some(1), vec![(1, String::from(""))]));
-        assert!(raft_log.append_entries(None, None, vec![(1, String::from(""))]));
-        assert!(!raft_log.append_entries(Some(1), Some(1), vec![(1, String::from(""))]));
-        assert_eq!(raft_log.get_log(), &vec![(1, String::from(""))]);
+        assert!(!raft_log.append_entries(1, Some(1), &vec![(Some(1), String::from(""))]));
+        assert!(raft_log.append_entries(0, None, &vec![(Some(1), String::from(""))]));
+        assert!(!raft_log.append_entries(2, Some(1), &vec![(Some(1), String::from(""))]));
+        assert_eq!(raft_log.get_log()[1..], vec![(Some(1), String::from(""))]);
     }
 
     #[test]
     fn test_add_to_end() {
         let mut raft_log = raft_log::RaftLog::new();
-        assert!(raft_log.append_entries(None, None, vec![(1, String::from(""))]));
-        assert!(!raft_log.append_entries(Some(0), Some(0), vec![(2, String::from(""))]));
-        assert!(raft_log.append_entries(Some(0), Some(1), vec![(2, String::from(""))]));
+        assert!(raft_log.append_entries(0, None, &vec![(Some(1), String::from(""))]));
+        assert!(!raft_log.append_entries(1, Some(0), &vec![(Some(2), String::from(""))]));
+        assert!(raft_log.append_entries(1, Some(1), &vec![(Some(2), String::from(""))]));
         assert_eq!(
-            raft_log.get_log(),
-            &vec![(1, String::from("")), (2, String::from(""))]
+            raft_log.get_log()[1..],
+            vec![(Some(1), String::from("")), (Some(2), String::from(""))]
         );
     }
 
     #[test]
     fn test_add_to_middle() {
         let mut raft_log = raft_log::RaftLog::new();
-        assert!(raft_log.append_entries(None, None, vec![(1, String::from(""))]));
+        assert!(raft_log.append_entries(0, None, &vec![(Some(1), String::from(""))]));
         assert!(raft_log.append_entries(
-            Some(0),
+            1,
             Some(1),
-            vec![(2, String::from("")), (2, String::from(""))]
+            &vec![(Some(2), String::from("")), (Some(2), String::from(""))]
         ));
         assert_eq!(
-            raft_log.get_log(),
-            &vec![
-                (1, String::from("")),
-                (2, String::from("")),
-                (2, String::from(""))
+            raft_log.get_log()[1..],
+            vec![
+                (Some(1), String::from("")),
+                (Some(2), String::from("")),
+                (Some(2), String::from(""))
             ]
         );
 
-        assert!(!raft_log.append_entries(Some(0), Some(2), vec![(3, String::from(""))]));
-        assert!(raft_log.append_entries(Some(0), Some(1), vec![(3, String::from(""))]));
+        assert!(!raft_log.append_entries(1, Some(2), &vec![(Some(3), String::from(""))]));
+        assert!(raft_log.append_entries(1, Some(1), &vec![(Some(3), String::from(""))]));
         assert_eq!(
-            raft_log.get_log(),
-            &vec![(1, String::from("")), (3, String::from(""))]
+            raft_log.get_log()[1..],
+            vec![(Some(1), String::from("")), (Some(3), String::from(""))]
         );
     }
 
     #[test]
     fn test_add_duplicate() {
         let mut raft_log = raft_log::RaftLog::new();
-        assert!(raft_log.append_entries(None, None, vec![(1, String::from(""))]));
+        assert!(raft_log.append_entries(0, None, &vec![(Some(1), String::from(""))]));
         assert!(raft_log.append_entries(
-            Some(0),
+            1,
             Some(1),
-            vec![(2, String::from("")), (2, String::from(""))]
+            &vec![(Some(2), String::from("")), (Some(2), String::from(""))]
         ));
 
-        assert!(raft_log.append_entries(Some(0), Some(1), vec![(2, String::from(""))]));
+        assert!(raft_log.append_entries(1, Some(1), &vec![(Some(2), String::from(""))]));
 
         // Shouldn't concat in this case
         assert_eq!(
-            raft_log.get_log(),
-            &vec![
-                (1, String::from("")),
-                (2, String::from("")),
-                (2, String::from(""))
+            raft_log.get_log()[1..],
+            vec![
+                (Some(1), String::from("")),
+                (Some(2), String::from("")),
+                (Some(2), String::from(""))
             ]
         );
     }

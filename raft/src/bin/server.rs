@@ -1,4 +1,5 @@
 use raft::{
+    key_value_store::key_value_store::KeyValueStore,
     raft::raft::{Message, Raft},
     raft_net::raft_net::{async_read, async_send_message, RaftNet, ServerNumber, SERVER_ADDRESSES},
 };
@@ -17,15 +18,21 @@ async fn main() {
         panic!("Server number not specified or too many arguments");
     }
 
-    let server_number: u8 = args[1].parse().expect("Server number is not valid");
+    let server_number: usize = args[1].parse().expect("Server number is not valid");
 
     let (write_send, write_recv) = mpsc::channel::<(ServerNumber, String)>(100);
     let (read_send, mut read_recv) = mpsc::channel::<(ServerNumber, String)>(100);
 
-    let mut raft_net = RaftNet::new(server_number).await;
-    tokio::spawn(async move { raft_net.run(read_send, write_recv).await });
+    let key_value_store = KeyValueStore::new(None).await;
 
-    let mut raft = Raft::new(SERVER_ADDRESSES.len().try_into().unwrap());
+    let mut raft_net = RaftNet::new(server_number).await;
+    tokio::spawn(async move { raft_net.run(read_send.clone(), write_recv).await });
+
+    let mut raft = Raft::new(
+        key_value_store,
+        server_number,
+        SERVER_ADDRESSES.len().try_into().unwrap(),
+    );
     tokio::spawn(async move {
         loop {
             let (server_number, message) = read_recv.recv().await.unwrap();
@@ -85,12 +92,12 @@ async fn main() {
         let deserialized_response =
             serde_json::from_str::<Message>(&serialized_response).expect("Deserialization error");
 
-        let response = match deserialized_response {
+        let message = match deserialized_response {
             Message::ConsoleResponse { message } => message,
             _ => String::from("Invalid console response"),
         };
 
-        stdout.write(response.as_bytes()).await.unwrap();
+        stdout.write(message.as_bytes()).await.unwrap();
         stdout.write("\n".as_bytes()).await.unwrap();
     }
 }
