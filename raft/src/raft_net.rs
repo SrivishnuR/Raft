@@ -157,9 +157,9 @@ pub mod raft_net {
         }
 
         async fn send_clock_ticks(server_number: usize, read_send: Sender<(ServerNumber, String)>) {
-            let serialized_clocktick = serde_json::to_string(&Message::ClockTick).unwrap();
+            let serialized_clocktick = serde_json::to_string(&Message::Tick).unwrap();
             loop {
-                sleep(Duration::from_secs(1)).await;
+                sleep(Duration::from_millis(1000)).await;
 
                 read_send
                     .clone()
