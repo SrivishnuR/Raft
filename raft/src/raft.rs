@@ -17,7 +17,7 @@ pub mod raft {
     pub enum Message {
         Tick,
         RandomTick,
-        RequestRandomTick,
+        ResetRandomTick,
         ConsoleRequest {
             message: String,
         },
@@ -75,7 +75,7 @@ pub mod raft {
         commit_index: usize,
         last_applied: usize,
         voted_for: Option<usize>,
-        request_random_tick: bool,
+        reset_random_tick: bool,
     }
 
     impl Raft {
@@ -95,7 +95,7 @@ pub mod raft {
                 commit_index: 0,
                 last_applied: 0,
                 voted_for: None,
-                request_random_tick: true,
+                reset_random_tick: true,
             }
         }
 
@@ -117,12 +117,12 @@ pub mod raft {
             let mut votes_vec = vec![false; self.cluster_size];
             votes_vec[self.server_number] = true;
             self.state = States::Candidate { votes_vec };
-            self.request_random_tick = true;
+            self.reset_random_tick = true;
         }
 
         fn set_follower(self: &mut Self) {
             self.state = States::Follower;
-            self.request_random_tick = true;
+            self.reset_random_tick = true;
         }
 
         fn validate_term(self: &mut Self, term: usize) -> bool {
@@ -131,6 +131,7 @@ pub mod raft {
             }
 
             if term > self.term {
+                dbg!("RESET");
                 self.set_follower();
                 self.voted_for = None;
                 self.term = term;
@@ -207,16 +208,16 @@ pub mod raft {
                     self.handle_request_vote_response(server_number, term, vote_granted)
                 }
                 Message::ConsoleRequest { message } => self.handle_console_request(message),
-                Message::RequestRandomTick => panic!("Received a random tick request!"),
+                Message::ResetRandomTick => panic!("Received a random tick request!"),
                 Message::ConsoleResponse { .. } => panic!("Received a console response!"),
                 Message::ClientResponse { .. } => panic!("Received a client response!"),
             };
 
-            if !self.request_random_tick {
-                self.request_random_tick = false;
+            if self.reset_random_tick {
+                self.reset_random_tick = false;
                 response.push((
                     ServerNumber::Server(self.server_number),
-                    Message::RandomTick,
+                    Message::ResetRandomTick,
                 ));
             }
 
@@ -357,6 +358,7 @@ pub mod raft {
                     return commands;
                 }
                 States::Candidate { .. } => {
+                    dbg!("Sending request");
                     let mut commands = vec![];
 
                     for other_server_number in 0..self.cluster_size {
@@ -381,6 +383,7 @@ pub mod raft {
         }
 
         fn handle_random_tick(self: &mut Self) -> Vec<(ServerNumber, Message)> {
+            dbg!("in random tick");
             match &self.state {
                 States::Leader { .. } => return vec![],
                 States::Candidate { .. } => {
@@ -426,7 +429,7 @@ pub mod raft {
                         term: self.term,
                     };
 
-                    self.request_random_tick = true;
+                    self.reset_random_tick = true;
                     return vec![(server_number, response_struct)];
                 }
                 States::Candidate { .. } => {
@@ -561,7 +564,10 @@ pub mod raft {
             match &mut self.state {
                 States::Candidate { votes_vec } => {
                     votes_vec[server_number] = true;
+                    let a = votes_vec.iter().filter(|value| **value).count();
+                    dbg!(a);
                     if votes_vec.iter().filter(|value| **value).count() > (self.cluster_size / 2) {
+                        dbg!("SET AS LEADER");
                         self.set_leader();
                     }
 

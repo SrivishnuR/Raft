@@ -1,8 +1,7 @@
 pub mod key_value_store {
     use std::collections::HashMap;
 
-    use tokio::{fs, io::AsyncWriteExt};
-    use uuid::Uuid;
+    use tokio::fs;
 
     pub struct KeyValueStore {
         data: HashMap<String, String>,

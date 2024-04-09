@@ -85,13 +85,13 @@ async fn main() {
 
             for response in responses {
                 match response.1 {
-                    Message::RequestRandomTick => {
+                    Message::ResetRandomTick => {
                         let mut locked_random_future_time = random_future_time.lock().await;
                         *locked_random_future_time = get_random_future_time();
                     }
                     _ => {
                         let serialized_response = (
-                            server_number,
+                            response.0,
                             serde_json::to_string::<Message>(&response.1).unwrap(),
                         );
                         write_send.send(serialized_response).await.unwrap();

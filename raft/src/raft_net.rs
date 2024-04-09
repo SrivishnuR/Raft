@@ -1,11 +1,10 @@
 pub mod raft_net {
     use lazy_static::lazy_static;
     use std::collections::HashMap;
-    use std::error::Error;
     use std::net::Ipv4Addr;
     use std::str;
     use std::time::Duration;
-    use tokio::io;
+    use tokio::io::{self, Error, ErrorKind, Interest};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc::{self, Receiver, Sender};
     use tokio::time::sleep;
@@ -15,7 +14,7 @@ pub mod raft_net {
     pub async fn async_send_message(
         stream: &mut tokio::net::tcp::OwnedWriteHalf,
         message: &str,
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> io::Result<()> {
         let len = message.len();
         let padded_message = format!("{:width$}", len, width = 10) + message;
 
@@ -30,6 +29,7 @@ pub mod raft_net {
                     continue;
                 }
                 Err(e) => {
+                    dbg!("Write broken!");
                     return Err(e.into());
                 }
             }
@@ -41,12 +41,19 @@ pub mod raft_net {
     pub async fn async_read_exactly(
         stream: &tokio::net::tcp::OwnedReadHalf,
         size: usize,
-    ) -> Result<String, Box<dyn Error>> {
+    ) -> io::Result<String> {
         let mut buffer: Vec<u8> = vec![0; size];
         loop {
-            stream.readable().await?;
+            let ready = stream.ready(Interest::READABLE).await?;
+            if ready.is_read_closed() {
+                dbg!("Stream not readable!");
+                return Err(Error::new(ErrorKind::BrokenPipe, "Stream not readable"));
+            }
+
             match stream.try_read(&mut buffer) {
-                Ok(0) => continue,
+                Ok(0) => {
+                    continue;
+                }
                 Ok(_) => {
                     break;
                 }
@@ -59,16 +66,14 @@ pub mod raft_net {
             }
         }
 
-        let parsed_string = str::from_utf8(&buffer)?;
+        let parsed_string = str::from_utf8(&buffer).unwrap();
 
         Ok(parsed_string.to_owned())
     }
 
-    pub async fn async_read(
-        stream: &tokio::net::tcp::OwnedReadHalf,
-    ) -> Result<String, Box<dyn Error>> {
+    pub async fn async_read(stream: &tokio::net::tcp::OwnedReadHalf) -> io::Result<String> {
         let size_str = async_read_exactly(stream, 10).await?;
-        let size = size_str.trim().parse()?;
+        let size: usize = size_str.trim().parse().expect("Size is not number");
 
         Ok(async_read_exactly(stream, size).await?)
     }
@@ -93,23 +98,23 @@ pub mod raft_net {
     }
 
     pub struct RaftNet {
-        server_number: usize,
+        my_server_number: usize,
         listener: TcpListener,
     }
 
     impl RaftNet {
         // Initializes a RaftNet and sets up the TCP listener
-        pub async fn new(server_number: usize) -> RaftNet {
+        pub async fn new(my_server_number: usize) -> RaftNet {
             let listener = TcpListener::bind(
                 SERVER_ADDRESSES
-                    .get(&server_number)
+                    .get(&my_server_number)
                     .expect("Server number is not valid"),
             )
             .await
             .unwrap();
 
             RaftNet {
-                server_number,
+                my_server_number,
                 listener,
             }
         }
@@ -130,9 +135,12 @@ pub mod raft_net {
                 }
 
                 if let Some(stream) = stream_map.get_mut(&server_number) {
-                    async_send_message(stream, &message).await.unwrap();
+                    if let Err(..) = async_send_message(stream, &message).await {
+                        dbg!("Stream is deleted");
+                        stream_map.remove(&server_number);
+                    }
                 } else {
-                    dbg!("No stream found for {}", server_number);
+                    // dbg!("No stream found for {}", server_number);
                 }
             }
         }
@@ -147,10 +155,15 @@ pub mod raft_net {
                 let (server_number, read_stream) = read_stream_recv.recv().await.unwrap();
                 tokio::spawn(async move {
                     loop {
-                        read_send_clone
-                            .send((server_number, async_read(&read_stream).await.unwrap()))
-                            .await
-                            .unwrap();
+                        if let Ok(message) = async_read(&read_stream).await {
+                            read_send_clone
+                                .send((server_number, message))
+                                .await
+                                .unwrap();
+                        } else {
+                            dbg!("Server disconnected");
+                            return;
+                        }
                     }
                 });
             }
@@ -184,7 +197,7 @@ pub mod raft_net {
                 mpsc::channel::<(ServerNumber, tokio::net::tcp::OwnedReadHalf)>(100);
 
             tokio::spawn(RaftNet::send_clock_ticks(
-                self.server_number,
+                self.my_server_number,
                 read_send.clone(),
             ));
             tokio::spawn(RaftNet::write(write_recv, write_stream_recv));
@@ -192,14 +205,14 @@ pub mod raft_net {
 
             for (server_number, addr) in SERVER_ADDRESSES.iter() {
                 // Don't connect to yourself
-                if *server_number == self.server_number {
+                if *server_number == self.my_server_number {
                     continue;
                 }
 
                 let wrapped_server_number = ServerNumber::Server(*server_number);
                 if let Ok(stream) = TcpStream::connect(addr).await {
                     let (read, mut write) = stream.into_split();
-                    async_send_message(&mut write, &self.server_number.to_string())
+                    async_send_message(&mut write, &self.my_server_number.to_string())
                         .await
                         .unwrap();
 
