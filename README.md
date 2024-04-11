@@ -1,2 +1,2 @@
-# raft_2024_04
-Rafting Trip, April 1-5, 2024
+# Raft
+This repository holds an implementation of Raft in Rust.
